@@ -162,6 +162,12 @@ netlink_socket (struct nlsock *nl, unsigned long groups)
   int namelen;
   int save_errno;
 
+  if (zserv_privs.change (ZPRIVS_RAISE))
+    {
+      zlog (NULL, LOG_ERR, "Can't raise privileges");
+      return -1;
+    }
+
   sock = socket (AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
   if (sock < 0)
     {
@@ -175,12 +181,6 @@ netlink_socket (struct nlsock *nl, unsigned long groups)
   snl.nl_groups = groups;
 
   /* Bind the socket to the netlink structure for anything. */
-  if (zserv_privs.change (ZPRIVS_RAISE))
-    {
-      zlog (NULL, LOG_ERR, "Can't raise privileges");
-      return -1;
-    }
-
   ret = bind (sock, (struct sockaddr *) &snl, sizeof snl);
   save_errno = errno;
   if (zserv_privs.change (ZPRIVS_LOWER))
@@ -282,9 +282,17 @@ netlink_parse_info (int (*filter) (struct sockaddr_nl *, struct nlmsghdr *),
   while (1)
     {
       char buf[NL_PKT_BUF_SIZE];
-      struct iovec iov = { buf, sizeof buf };
+      struct iovec iov = {
+        .iov_base = buf,
+        .iov_len = sizeof buf
+      };
       struct sockaddr_nl snl;
-      struct msghdr msg = { (void *) &snl, sizeof snl, &iov, 1, NULL, 0, 0 };
+      struct msghdr msg = {
+        .msg_name = (void *) &snl,
+        .msg_namelen = sizeof snl,
+        .msg_iov = &iov,
+        .msg_iovlen = 1
+      };
       struct nlmsghdr *h;
 
       status = recvmsg (nl->sock, &msg, 0);
@@ -504,7 +512,7 @@ netlink_interface (struct sockaddr_nl *snl, struct nlmsghdr *h)
   set_ifindex(ifp, ifi->ifi_index);
   ifp->flags = ifi->ifi_flags & 0x0000fffff;
   ifp->mtu6 = ifp->mtu = *(uint32_t *) RTA_DATA (tb[IFLA_MTU]);
-  ifp->metric = 1;
+  ifp->metric = 0;
 
   /* Hardware type and address. */
   ifp->hw_type = ifi->ifi_type;
@@ -1084,7 +1092,7 @@ netlink_link_change (struct sockaddr_nl *snl, struct nlmsghdr *h)
           set_ifindex(ifp, ifi->ifi_index);
           ifp->flags = ifi->ifi_flags & 0x0000fffff;
           ifp->mtu6 = ifp->mtu = *(int *) RTA_DATA (tb[IFLA_MTU]);
-          ifp->metric = 1;
+          ifp->metric = 0;
 
           netlink_interface_update_hw_addr (tb, ifp);
 
@@ -1096,7 +1104,7 @@ netlink_link_change (struct sockaddr_nl *snl, struct nlmsghdr *h)
           /* Interface status change. */
           set_ifindex(ifp, ifi->ifi_index);
           ifp->mtu6 = ifp->mtu = *(int *) RTA_DATA (tb[IFLA_MTU]);
-          ifp->metric = 1;
+          ifp->metric = 0;
 
           netlink_interface_update_hw_addr (tb, ifp);
 
@@ -1238,9 +1246,9 @@ netlink_route_read (void)
 /* Utility function  comes from iproute2. 
    Authors:	Alexey Kuznetsov, <kuznet@ms2.inr.ac.ru> */
 int
-addattr_l (struct nlmsghdr *n, int maxlen, int type, void *data, int alen)
+addattr_l (struct nlmsghdr *n, size_t maxlen, int type, void *data, int alen)
 {
-  int len;
+  size_t len;
   struct rtattr *rta;
 
   len = RTA_LENGTH (alen);
@@ -1280,9 +1288,9 @@ rta_addattr_l (struct rtattr *rta, int maxlen, int type, void *data, int alen)
 /* Utility function comes from iproute2. 
    Authors:	Alexey Kuznetsov, <kuznet@ms2.inr.ac.ru> */
 int
-addattr32 (struct nlmsghdr *n, int maxlen, int type, int data)
+addattr32 (struct nlmsghdr *n, size_t maxlen, int type, int data)
 {
-  int len;
+  size_t len;
   struct rtattr *rta;
 
   len = RTA_LENGTH (4);
@@ -1312,8 +1320,16 @@ netlink_talk (struct nlmsghdr *n, struct nlsock *nl)
 {
   int status;
   struct sockaddr_nl snl;
-  struct iovec iov = { (void *) n, n->nlmsg_len };
-  struct msghdr msg = { (void *) &snl, sizeof snl, &iov, 1, NULL, 0, 0 };
+  struct iovec iov = {
+    .iov_base = (void *) n,
+    .iov_len = n->nlmsg_len
+  };
+  struct msghdr msg = {
+    .msg_name = (void *) &snl,
+    .msg_namelen = sizeof snl,
+    .msg_iov = &iov,
+    .msg_iovlen = 1,
+  };
   int save_errno;
 
   memset (&snl, 0, sizeof snl);
@@ -1545,7 +1561,7 @@ _netlink_route_build_multipath(
     {
       rta_addattr_l (rta, NL_PKT_BUF_SIZE, RTA_GATEWAY,
                      &nexthop->gate.ipv4, bytelen);
-      rtnh->rtnh_len += sizeof (struct rtattr) + 4;
+      rtnh->rtnh_len += sizeof (struct rtattr) + bytelen;
 
       if (nexthop->src.ipv4.s_addr)
         *src = &nexthop->src;
@@ -1564,6 +1580,7 @@ _netlink_route_build_multipath(
     {
       rta_addattr_l (rta, NL_PKT_BUF_SIZE, RTA_GATEWAY,
                      &nexthop->gate.ipv6, bytelen);
+      rtnh->rtnh_len += sizeof (struct rtattr) + bytelen;
 
       if (IS_ZEBRA_DEBUG_KERNEL)
         zlog_debug("netlink_route_multipath() (%s): "
@@ -1848,7 +1865,7 @@ kernel_delete_ipv6_old (struct prefix_ipv6 *dest, struct in6_addr *gate,
                         dest->prefixlen, gate, index, flags, table);
 }
 #endif /* HAVE_IPV6 */
-
+
 /* Interface address modification. */
 static int
 netlink_address (int cmd, int family, struct interface *ifp,

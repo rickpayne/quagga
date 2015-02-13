@@ -7,7 +7,7 @@
 ##
 AC_PREREQ(2.53)
 
-AC_INIT(Quagga, 0.99.22, [https://bugzilla.quagga.net])
+AC_INIT(Quagga, 0.99.24-rc1, [https://bugzilla.quagga.net])
 AC_CONFIG_SRCDIR(lib/zebra.h)
 AC_CONFIG_MACRO_DIR([m4])
 
@@ -202,8 +202,6 @@ AC_ARG_ENABLE(ipv6,
 [  --disable-ipv6          turn off IPv6 related features and daemons])
 AC_ARG_ENABLE(doc,
 [  --disable-doc           do not build docs])
-AC_ARG_ENABLE(tests,
-[  --disable-tests         do not build tests])
 AC_ARG_ENABLE(zebra,
 [  --disable-zebra         do not build zebra daemon])
 AC_ARG_ENABLE(bgpd,
@@ -222,6 +220,8 @@ AC_ARG_ENABLE(watchquagga,
 [  --disable-watchquagga   do not build watchquagga])
 AC_ARG_ENABLE(isisd,
 [  --enable-isisd          build isisd])
+AC_ARG_ENABLE(pimd,
+[  --enable-pimd           build pimd])
 AC_ARG_ENABLE(solaris,
 [  --enable-solaris          build solaris])
 AC_ARG_ENABLE(bgp-announce,
@@ -273,7 +273,9 @@ AC_ARG_ENABLE(gcc_ultra_verbose,
 AC_ARG_ENABLE(linux24_tcp_md5,
 [  --enable-linux24-tcp-md5  enable support for old, Linux-2.4 RFC2385 patch])
 AC_ARG_ENABLE(gcc-rdynamic,
-[  --enable-gcc-rdynamic   enable gcc linking with -rdynamic for better backtraces])
+[  --enable-gcc-rdynamic         enable linking with -rdynamic for better backtraces (default if gcc)])
+AC_ARG_ENABLE(backtrace,
+[  --disable-backtrace,          disable crash backtraces (default autodetect)])
 AC_ARG_ENABLE(time-check,
 [  --disable-time-check          disable slow thread warning messages])
 AC_ARG_ENABLE(pcreposix,
@@ -288,8 +290,10 @@ if test x"${enable_gcc_ultra_verbose}" = x"yes" ; then
   CFLAGS="${CFLAGS} -Wpacked -Wpadded"
 fi
 
-if test x"${enable_gcc_rdynamic}" = x"yes" ; then
-  LDFLAGS="${LDFLAGS} -rdynamic"
+if test x"${enable_gcc_rdynamic}" != x"no" ; then
+  if test x"${enable_gcc_rdynamic}" = x"yes" -o x"$COMPILER" = x"GCC"; then
+    LDFLAGS="${LDFLAGS} -rdynamic"
+  fi
 fi
 
 if test x"${enable_time_check}" != x"no" ; then
@@ -440,7 +444,7 @@ dnl Check other header files.
 dnl -------------------------
 AC_CHECK_HEADERS([stropts.h sys/ksym.h sys/times.h sys/select.h \
 	sys/types.h linux/version.h netdb.h asm/types.h \
-	sys/param.h limits.h signal.h \
+	sys/cdefs.h sys/param.h limits.h signal.h \
 	sys/socket.h netinet/in.h time.h sys/time.h])
 
 dnl Utility macro to avoid retyping includes all the time
@@ -530,6 +534,18 @@ AC_CHECK_HEADERS([ucontext.h], [], [],
 #endif /* __USE_GNU */
 QUAGGA_INCLUDES
 ])
+
+m4_define([UCONTEXT_INCLUDES],
+[#include <ucontext.h>])dnl
+
+AC_CHECK_MEMBERS([ucontext_t.uc_mcontext.uc_regs],
+  [], [], [UCONTEXT_INCLUDES])
+AC_CHECK_MEMBERS([ucontext_t.uc_mcontext.regs],
+  [AC_CHECK_MEMBERS([ucontext_t.uc_mcontext.regs.nip],
+   [], [], [UCONTEXT_INCLUDES])],
+  [], [UCONTEXT_INCLUDES])
+AC_CHECK_MEMBERS([ucontext_t.uc_mcontext.gregs],
+  [], [], [UCONTEXT_INCLUDES])
 
 m4_define([QUAGGA_INCLUDES],
 QUAGGA_INCLUDES
@@ -1202,21 +1218,22 @@ dnl ----------
   if test "$zebra_cv_linux_ipv6" = "yes";then
     AC_MSG_CHECKING(for GNU libc >= 2.1)
     AC_DEFINE(HAVE_IPV6,1,Linux IPv6)
+    AC_DEFINE(LINUX_IPV6,1,Linux IPv6 stack)
+
     AC_EGREP_CPP(yes, [
 #include <features.h>
 #if __GLIBC__ >= 2 && __GLIBC_MINOR__ >= 1
   yes
 #endif], 
       [glibc=yes
-       AC_DEFINE(LINUX_IPV6,1,Linux IPv6 stack)
        AC_MSG_RESULT(yes)], 
       AC_MSG_RESULT(no)
     )
     RIPNGD="ripngd"
     OSPF6D="ospf6d"
     if test "$glibc" != "yes"; then
-      INCLUDES="-I/usr/inet6/include"
       if test x`ls /usr/inet6/lib/libinet6.a 2>/dev/null` != x;then
+         INCLUDES="-I/usr/inet6/include"
          LIB_IPV6="-L/usr/inet6/lib -linet6"
       fi
     fi
@@ -1266,13 +1283,6 @@ if test "${enable_doc}" = "no";then
   DOC=""
 else
   DOC="doc"
-fi
-
-dnl can't use TESTS as name, that's special with automake
-if test "${enable_tests}" = "no";then
-  BUILD_TESTS=""
-else
-  BUILD_TESTS="tests"
 fi
 
 dnl --------------------
@@ -1354,6 +1364,13 @@ case "${enable_isisd}" in
 esac
 AM_CONDITIONAL(ISISD, test "x$ISISD" = "xisisd")
 
+case "${enable_pimd}" in
+  "yes") PIMD="pimd";;
+  "no" ) PIMD="";;
+  *    ) ;;
+esac
+AM_CONDITIONAL(PIMD, test "x$PIMD" = "xpimd")
+
 # XXX Perhaps auto-enable on Solaris, but that's messy for cross builds.
 case "${enable_solaris}" in
   "yes") SOLARIS="solaris";;
@@ -1368,7 +1385,6 @@ else
 fi
 
 AC_SUBST(DOC)
-AC_SUBST(BUILD_TESTS)
 AC_SUBST(ZEBRA)
 AC_SUBST(BGPD)
 AC_SUBST(RIPD)
@@ -1378,6 +1394,7 @@ AC_SUBST(OSPF6D)
 AC_SUBST(BABELD)
 AC_SUBST(WATCHQUAGGA)
 AC_SUBST(ISISD)
+AC_SUBST(PIMD)
 AC_SUBST(SOLARIS)
 AC_SUBST(VTYSH)
 AC_SUBST(INCLUDES)
@@ -1460,7 +1477,8 @@ dnl sockaddr and netinet checks
 dnl ---------------------------
 AC_CHECK_TYPES([struct sockaddr, struct sockaddr_in,
 	struct sockaddr_in6, struct sockaddr_un, struct sockaddr_dl,
-	socklen_t,
+	socklen_t, struct vifctl, struct mfcctl, struct sioc_sg_req,
+	vifi_t, struct sioc_vif_req, struct igmpmsg,
 	struct ifaliasreq, struct if6_aliasreq, struct in6_aliasreq,
 	struct nd_opt_adv_interval, struct rt_addrinfo,
 	struct nd_opt_homeagent_info, struct nd_opt_adv_interval],
@@ -1488,6 +1506,45 @@ AC_CHECK_TYPES([struct in_pktinfo],
  [if test "${enable_irdp}" = "yes"; then
     AC_MSG_ERROR(['IRDP requires in_pktinfo at the moment!'])
   fi], [QUAGGA_INCLUDES])
+
+dnl -----------------------
+dnl checking for IP_PKTINFO
+dnl -----------------------
+AC_MSG_CHECKING(for IP_PKTINFO)
+AC_TRY_COMPILE([#include <netdb.h>], [
+  int opt = IP_PKTINFO;
+], [
+  AC_MSG_RESULT(yes)
+  AC_DEFINE(HAVE_IP_PKTINFO, 1, [Have IP_PKTINFO])
+], [
+  AC_MSG_RESULT(no)
+])
+
+dnl ---------------------------
+dnl checking for IP_RECVDSTADDR
+dnl ---------------------------
+AC_MSG_CHECKING(for IP_RECVDSTADDR)
+AC_TRY_COMPILE([#include <netinet/in.h>], [
+  int opt = IP_RECVDSTADDR;
+], [
+  AC_MSG_RESULT(yes)
+  AC_DEFINE(HAVE_IP_RECVDSTADDR, 1, [Have IP_RECVDSTADDR])
+], [
+  AC_MSG_RESULT(no)
+])
+
+dnl ----------------------
+dnl checking for IP_RECVIF
+dnl ----------------------
+AC_MSG_CHECKING(for IP_RECVIF)
+AC_TRY_COMPILE([#include <netinet/in.h>], [
+  int opt = IP_RECVIF;
+], [
+  AC_MSG_RESULT(yes)
+  AC_DEFINE(HAVE_IP_RECVIF, 1, [Have IP_RECVIF])
+], [
+  AC_MSG_RESULT(no)
+])
 
 dnl --------------------------------------
 dnl checking for getrusage struct and call
@@ -1566,12 +1623,21 @@ AX_SYS_WEAK_ALIAS
 dnl ---------------------------
 dnl check for glibc 'backtrace'
 dnl --------------------------- 
-AC_CHECK_HEADER([execinfo.h],
-  [AC_CHECK_FUNC([backtrace],
-    [AC_DEFINE(HAVE_GLIBC_BACKTRACE,,[Glibc backtrace])
-     AC_DEFINE(HAVE_STACK_TRACE,,[Stack symbol decoding])
+if test x"${enable_backtrace}" != x"no" ; then
+  backtrace_ok=no
+  AC_CHECK_HEADER([execinfo.h], [
+    AC_SEARCH_LIBS([backtrace], [execinfo], [
+      AC_DEFINE(HAVE_GLIBC_BACKTRACE,,[Glibc backtrace])
+      AC_DEFINE(HAVE_STACK_TRACE,,[Stack symbol decoding])
+      backtrace_ok=yes
+    ],, [-lm])
   ])
-])
+
+  if test x"${enable_backtrace}" = x"yes" -a x"${backtrace_ok}" = x"no"; then
+    dnl user explicitly requested backtrace but we failed to find support
+    AC_MSG_FAILURE([failed to find backtrace support])
+  fi
+fi
 
 dnl -----------------------------------------
 dnl check for malloc mallinfo struct and call
@@ -1669,6 +1735,7 @@ AC_DEFINE_UNQUOTED(PATH_OSPFD_PID, "$quagga_statedir/ospfd.pid",ospfd PID)
 AC_DEFINE_UNQUOTED(PATH_OSPF6D_PID, "$quagga_statedir/ospf6d.pid",ospf6d PID)
 AC_DEFINE_UNQUOTED(PATH_BABELD_PID, "$quagga_statedir/babeld.pid",babeld PID)
 AC_DEFINE_UNQUOTED(PATH_ISISD_PID, "$quagga_statedir/isisd.pid",isisd PID)
+AC_DEFINE_UNQUOTED(PATH_PIMD_PID, "$quagga_statedir/pimd.pid",pimd PID)
 AC_DEFINE_UNQUOTED(PATH_WATCHQUAGGA_PID, "$quagga_statedir/watchquagga.pid",watchquagga PID)
 AC_DEFINE_UNQUOTED(ZEBRA_SERV_PATH, "$quagga_statedir/zserv.api",zebra api socket)
 AC_DEFINE_UNQUOTED(ZEBRA_VTYSH_PATH, "$quagga_statedir/zebra.vty",zebra vty socket)
@@ -1679,6 +1746,7 @@ AC_DEFINE_UNQUOTED(OSPF_VTYSH_PATH, "$quagga_statedir/ospfd.vty",ospfd vty socke
 AC_DEFINE_UNQUOTED(OSPF6_VTYSH_PATH, "$quagga_statedir/ospf6d.vty",ospf6d vty socket)
 AC_DEFINE_UNQUOTED(BABEL_VTYSH_PATH, "$quagga_statedir/babeld.vty",babeld vty socket)
 AC_DEFINE_UNQUOTED(ISIS_VTYSH_PATH, "$quagga_statedir/isisd.vty",isisd vty socket)
+AC_DEFINE_UNQUOTED(PIM_VTYSH_PATH, "$quagga_statedir/pimd.vty",pimd vty socket)
 AC_DEFINE_UNQUOTED(DAEMON_VTY_DIR, "$quagga_statedir",daemon vty directory)
 
 dnl -------------------------------
@@ -1704,6 +1772,7 @@ AC_CONFIG_FILES([Makefile lib/Makefile zebra/Makefile ripd/Makefile
 	  ripngd/Makefile bgpd/Makefile ospfd/Makefile watchquagga/Makefile
 	  ospf6d/Makefile isisd/Makefile babeld/Makefile vtysh/Makefile
 	  doc/Makefile ospfclient/Makefile tests/Makefile m4/Makefile
+	  pimd/Makefile
 	  tests/bgpd.tests/Makefile
 	  tests/libzebra.tests/Makefile
 	  redhat/Makefile
